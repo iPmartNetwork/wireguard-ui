@@ -1,7 +1,9 @@
-<p align="center"> 
-    <img src="extra/logo/logo.svg" width="200" alt="Outline Logo"> 
-</p>
-
+<p align="center">
+<picture>
+<img width="160" height="160"  alt="XPanel" src="https://github.com/iPmartNetwork/iPmart-SSH/blob/main/images/logo.png">
+</picture>
+  </p> 
+<p align="center">
 <h2 align="center">Wireguard UI</h2>
 
 A web user interface to manage your WireGuard setup.
