@@ -48,7 +48,7 @@ git clone https://github.com/iPmartNetwork/wireguard-ui.git
 
 ```
 ```
-cd wireguard-ui.git
+cd wireguard-ui
 
 ```
 ```
