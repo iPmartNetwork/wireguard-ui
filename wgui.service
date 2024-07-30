@@ -1,0 +1,11 @@
+[Unit]
+Description=Restart WireGuard
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /etc/systemd/system/restartwg.sh
+
+
+[Install]
+RequiredBy=wgui.path

@@ -1,0 +1,67 @@
+name: wireguard-ui build release
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  releases-matrix:
+    name: Release Go Binary
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # build and publish in parallel: linux/386, linux/amd64, darwin/386, darwin/amd64
+        goos: [linux, freebsd, darwin]
+        goarch: [386, amd64, arm, arm64]
+        exclude:
+          - goarch: 386
+            goos: darwin
+          - goarch: arm
+            goos: darwin
+          - goarch: arm64
+            goos: darwin
+        goarm:
+          - 7
+    steps:
+    # get the source code
+    - uses: actions/checkout@v2
+
+    # set environment
+    - name: Set APP_VERSION env
+      run: echo "APP_VERSION=$(echo ${GITHUB_REF} | rev | cut -d'/' -f 1 | rev )" >> $GITHUB_ENV
+    - name: Set BUILD_TIME env
+      run: echo "BUILD_TIME=$(date)" >> $GITHUB_ENV
+    - name: Environment Printer
+      uses: managedkaos/print-env@v1.0
+
+    # setup node
+    - uses: actions/setup-node@v2
+      with:
+        node-version: '14'
+        registry-url: 'https://registry.npmjs.org'
+
+    # prepare assets for go rice
+    - name: Prepare assets
+      run: |
+        chmod +x ./prepare_assets.sh
+        ./prepare_assets.sh
+
+    # get go rice tool
+    - name: Get go rice tool
+      run: go get github.com/GeertJohan/go.rice/rice
+
+    # run go rice embed
+    - name: Run go rice embed
+      run: ${HOME}/go/bin/rice embed-go
+
+    # build and make the releases
+    - name: Build and make the releases
+      uses: wangyoucao577/go-release-action@master
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        goos: ${{ matrix.goos }}
+        goarch: ${{ matrix.goarch }}
+        goversion: "https://dl.google.com/go/go1.16.1.linux-amd64.tar.gz"
+        binary_name: "wireguard-ui"
+        build_flags: -v
+        ldflags: -X "main.appVersion=${{ env.APP_VERSION }}" -X "main.buildTime=${{ env.BUILD_TIME }}" -X main.gitCommit=${{ github.sha }} -X main.gitRef=${{ github.ref }}
