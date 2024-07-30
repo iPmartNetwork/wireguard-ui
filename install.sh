@@ -1,409 +1,164 @@
 #!/bin/bash
-###
-#
-# Author: ali hassanzadeh
-# Date: 2024/07/31
-# Desc:
-#   - Install WireGuard without any configuration. Everything will be done through Wireguard-UI
-#   - Install WireGuard-UI
-#       - For a maximum security it will be use through ssh tunnel (ssh -L 5000:localhost:5000 user@vpn.domain.tld)
-#       - Please customise /opt/wgui/db/server/users.json after first login
-#   - Configure strict firewall
-#       - DROP any ipv4 & ipv6 requests
-#       - Allow loopback ipv4 & ipv6
-#       - Allow Outgoing SSH, HTTPs, HTTP, DNS, Ping
-#       - Allow Ingoing SSH, Wireguard ($wg_port)
-#       - Allow everything needed by wireguard
-#   - Save iptables rules in /etc/iptables/
-#       - Load them at boot via /etc/network/if-up.d/iptables
-#
-# Sources:
-#   - Wireguard:
-#       - https://www.wireguard.com
-#       - https://github.com/WireGuard
-#   - Wireguard-ui:
-#       - https://github.com/ngoduykhanh/wireguard-ui
-#
-###
-OS_DETECTED="$(awk '/^ID=/' /etc/*-release | awk -F'=' '{ print tolower($2) }')"
-CONTINUE_ON_UNDETECTED_OS=false                                                                                         # Set true to continue if OS is not detected properly (not recommended)
-WGUI_LINK="https://github.com/ngoduykhanh/wireguard-ui/releases/download/v0.5.0/wireguard-ui-v0.5.0-linux-amd64.tar.gz" # Link to the last release
-WGUI_PATH="/opt/wgui"                                                                                                   # Where Wireguard-ui will be install
-WGUI_BIN_PATH="/usr/local/bin"                                                                                          # Where the symbolic link will be make
-SYSTEMCTL_PATH="/usr/bin/systemctl"
-SYS_INTERFACE_GUESS=$(ip route show default | awk '/default/ {print $5}')
-PUBLIC_IP="$(curl -s icanhazip.com)"
+# Description
 
-function main() {
-  cat <<EOM
+# Sys env / paths / etc
+# -------------------------------------------------------------------------------------------\
+PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
+SCRIPT_PATH=$(cd `dirname "${BASH_SOURCE[0]}"` && pwd)
 
-###########################################################################
-  - Please make sure that your system is fully up to date and rebooted
-      - The current running kernel must be the same as installed
-      - No pending reboot
-      - You can run the command below and then run again this script
-          apt update && apt full-upgrade -y && init 6
+WG_CATALOG=/usr/local/bin/wgui
+WG_ADDERSS=10.0.1.0
+WG_PORT=51823
 
-  - Press Ctrl^C to exit or ignore this message and continue.
-###########################################################################
+# Functions
+# -------------------------------------------------------------------------------------------\
 
-EOM
-
-  while [[ -z $ENDPOINT ]]; do
-    echo "---"
-    read -p "Enpoint [$PUBLIC_IP](fqdn possible as well): " ENDPOINT
-    ENDPOINT=${ENDPOINT:-$PUBLIC_IP}
-  done
-  while ! [[ $WG_PORT =~ ^[0-9]+$ ]]; do
-    echo "---"
-    read -p "Wireguard port ? [51820]: " WG_PORT
-    WG_PORT=${WG_PORT:-"51820"}
-  done
-  while ! [[ $WG_NETWORK =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; do
-    echo "---"
-    read -p "Wireguard network ? [10.252.1.0/24]: " WG_NETWORK
-    WG_NETWORK=${WG_NETWORK:-"10.252.1.0/24"}
-  done
-  while [[ -z $WG_INTERFACE ]]; do
-    echo "---"
-    read -p "Wireguard interface ? [wg0]: " WG_INTERFACE
-    WG_INTERFACE=${WG_INTERFACE:-"wg0"}
-  done
-  while [[ -z $SYS_INTERFACE ]]; do
-    echo "---"
-    read -p "System network interface ? [$SYS_INTERFACE_GUESS]: " SYS_INTERFACE
-    SYS_INTERFACE=${SYS_INTERFACE:-$SYS_INTERFACE_GUESS}
-  done
-  while ! [[ $STRICT_FIREWALL =~ ^(y|n)$ ]]; do
-    echo "---"
-    read -p "Set the strict firewall ? [y/N]: " STRICT_FIREWALL
-    STRICT_FIREWALL=${STRICT_FIREWALL:-"n"}
-  done
-  if [ "$STRICT_FIREWALL" == "y" ]; then
-    while ! [[ $SSH_PORT =~ ^[0-9]+$ ]]; do
-      echo "---"
-      read -p "SSH port ? [22]: " SSH_PORT
-      SSH_PORT=${SSH_PORT:-"22"}
+# Selleep function
+function timeout_sleep() {
+    echo "Sleeping for $1 seconds"
+    for (( i=$1; i>0; i--)); do
+        echo -ne "$i\r"
+        sleep 1
     done
-  fi
-
-  install
-  network_conf
-  firewall_conf
-  wg_conf
-  wgui_conf
-
-  cat <<EOM
-
-##################################################################################
-                            Setup done.
-
-  - Your iptables rules have been saved just in case in:
-      - /etc/iptables/rules.v4.bak
-      - /etc/iptables/rules.v6.bak
-
-
-  - To access your wireguard-ui please open a new ssh connexion
-      - ssh -L 5000:localhost:5000 user@myserver.domain.tld
-      - And browse to http://localhost:5000
-
-##################################################################################"
-
-EOM
 }
 
-function install() {
-
-  # Wireguard is not available in Buster, so take it from backports (only if Debian Buster has been detected in detect_os)
-  if [ ! -z  "$BACKPORTS_REPO" ]; then
-    if ! grep -q "^$BACKPORTS_REPO" /etc/apt/sources.list /etc/apt/sources.list.d/* > /dev/null 2>&1 ; then
-      echo ""
-      msg info "Enable Backports for Debian Buster"
-      echo $BACKPORTS_REPO >> /etc/apt/sources.list
-    fi
-  fi
-
-  echo ""
-  echo "### Update & Upgrade"
-  apt -qq update && apt -qq full-upgrade -y
-
-  echo ""
-  echo "### Installing WireGuard"
-  apt -qq install wireguard -y
-
-  echo ""
-  echo "### Installing Wireguard-UI"
-  if [ ! -d $WGUI_PATH ]; then
-    mkdir -m 077 $WGUI_PATH
-  fi
-
-  wget -qO - $WGUI_LINK | tar xzf - -C $WGUI_PATH
-
-  if [ -f $WGUI_BIN_PATH/wireguard-ui ]; then
-    rm $WGUI_BIN_PATH/wireguard-ui
-  fi
-  ln -s $WGUI_PATH/wireguard-ui $WGUI_BIN_PATH/wireguard-ui
+# Update Debian system
+function update_debian() {
+    apt-get update
+    apt-get upgrade -y
+    apt-get dist-upgrade -y
+    apt-get autoremove -y
+    apt-get autoclean -y
 }
 
-function network_conf() {
-  echo ""
-  echo "### Enable ipv4 Forwarding"
-  sed -i 's/#net.ipv4.ip_forward=1/net.ipv4.ip_forward=1/' /etc/sysctl.conf
-  sysctl -p
+# Install wireguard on Debian
+function install_wireguard() {
+    apt -y install wireguard wget net-tools iptables iftop htop zip curl
 }
 
-function firewall_conf() {
-  echo ""
-  echo "### Firewall configuration"
-
-  if [ ! $(which iptables)  ]; then
-    echo ""
-    msg info "iptables is required. Let's install it."
-    apt -qq install iptables -y
-  fi
-
-  if [ ! $(which ifup)  ]; then
-    echo ""
-    msg info "ifupdown is required. Let's install it."
-    apt -qq install ifupdown -y
-  fi
-
-  if [ ! -d /etc/iptables ]; then
-    mkdir -m 755 /etc/iptables
-  fi
-
-  # Stop fail2ban if it present to not save banned IPs
-  if [ $(which fail2ban-client) ]; then
-    fail2ban-client stop
-  fi
-
-  # Backup actual firewall configuration
-  /sbin/iptables-save > /etc/iptables/rules.v4.bak
-  /sbin/ip6tables-save > /etc/iptables/rules.v6.bak
-
-  if [ "$STRICT_FIREWALL" == "n" ]; then
-    RULES_4=(
-    "INPUT -i $WG_INTERFACE -m comment --comment wireguard-network -j ACCEPT"
-    "INPUT -p udp -m udp --dport $WG_PORT -i $SYS_INTERFACE -m comment --comment external-port-wireguard -j ACCEPT"
-    "FORWARD -s $WG_NETWORK -i $WG_INTERFACE -o $SYS_INTERFACE -m comment --comment Wireguard-traffic-from-$WG_INTERFACE-to-$SYS_INTERFACE -j ACCEPT"
-    "FORWARD -d $WG_NETWORK -i $SYS_INTERFACE -o $WG_INTERFACE -m comment --comment Wireguard-traffic-from-$SYS_INTERFACE-to-$WG_INTERFACE -j ACCEPT"
-    "POSTROUTING -t nat -s $WG_NETWORK -o $SYS_INTERFACE -m comment --comment wireguard-nat-rule -j MASQUERADE"
-    )
-  elif [ "$STRICT_FIREWALL" == "y" ]; then
-    RULES_4=(
-    "INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT"
-    "INPUT -i lo -m comment --comment localhost-network -j ACCEPT"
-    "INPUT -i $WG_INTERFACE -m comment --comment wireguard-network -j ACCEPT"
-    "INPUT -p tcp -m tcp --dport $SSH_PORT -j ACCEPT"
-    "INPUT -p icmp -m icmp --icmp-type 8 -m comment --comment Allow-ping -j ACCEPT"
-    "INPUT -p udp -m udp --dport $WG_PORT -i $SYS_INTERFACE -m comment --comment external-port-wireguard -j ACCEPT"
-    "FORWARD -s $WG_NETWORK -i $WG_INTERFACE -o $SYS_INTERFACE -m comment --comment Wireguard-traffic-from-$WG_INTERFACE-to-$SYS_INTERFACE -j ACCEPT"
-    "FORWARD -d $WG_NETWORK -i $SYS_INTERFACE -o $WG_INTERFACE -m comment --comment Wireguard-traffic-from-$SYS_INTERFACE-to-$WG_INTERFACE -j ACCEPT"
-    "FORWARD -p tcp --syn -m limit --limit 1/second -m comment --comment Flood-&-DoS -j ACCEPT"
-    "FORWARD -p udp -m limit --limit 1/second -m comment --comment Flood-&-DoS -j ACCEPT"
-    "FORWARD -p icmp --icmp-type echo-request -m limit --limit 1/second -m comment --comment Flood-&-DoS -j ACCEPT"
-    "FORWARD -p tcp --tcp-flags SYN,ACK,FIN,RST RST -m limit --limit 1/s -m comment --comment Port-Scan -j ACCEPT"
-    "OUTPUT -m state --state RELATED,ESTABLISHED -j ACCEPT"
-    "OUTPUT -o lo -m comment --comment localhost-network -j ACCEPT"
-    "OUTPUT -p tcp -m tcp --dport 443 -j ACCEPT"
-    "OUTPUT -p tcp -m tcp --dport 80 -j ACCEPT"
-    "OUTPUT -p tcp -m tcp --dport 22 -j ACCEPT"
-    "OUTPUT -p udp -m udp --dport 53 -j ACCEPT"
-    "OUTPUT -p tcp -m tcp --dport 53 -j ACCEPT"
-    "OUTPUT -p icmp -m icmp --icmp-type 8 -j ACCEPT"
-    "POSTROUTING -t nat -s $WG_NETWORK -o $SYS_INTERFACE -m comment --comment wireguard-nat-rule -j MASQUERADE"
-    )
-
-    RULES_6=(
-    "INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT"
-    "INPUT -i lo -m comment --comment localhost-network -j ACCEPT"
-    "OUTPUT -m state --state RELATED,ESTABLISHED -j ACCEPT"
-    "OUTPUT -o lo -m comment --comment localhost-network -j ACCEPT"
-    )
-
-    # Change default policy to DROP instead ACCEPT
-    iptables -P INPUT DROP
-    iptables -P FORWARD DROP
-    iptables -P OUTPUT DROP
-    ip6tables -P INPUT DROP
-    ip6tables -P FORWARD DROP
-    ip6tables -P OUTPUT DROP
-  fi
-
-  # Apply rules only if they are not already present
-  if [ ! -z "$RULES_4" ]; then
-    for e in "${RULES_4[@]}"; do
-      iptables -C $e > /dev/null 2>&1 || iptables -A $e
-    done
-  fi
-
-  if [ ! -z "$RULES_6" ]; then
-    for e in "${RULES_6[@]}"; do
-      ip6tables -C $e > /dev/null 2>&1 || ip6tables -A $e
-    done
-  fi
-
-  # Backup allrules (old and new)
-  /sbin/iptables-save > /etc/iptables/rules.v4
-  /sbin/ip6tables-save > /etc/iptables/rules.v6
-
-  # Restart Fail2ban
-  if [ $(which fail2ban-client) ]; then
-    fail2ban-client start
-  fi
-
-  # Make a script for a persistent configuration
-  echo "#!/bin/sh
-  /sbin/iptables-restore < /etc/iptables/rules.v4
-  /sbin/ip6tables-restore < /etc/iptables/rules.v6" > /etc/network/if-up.d/iptables
-  chmod 755 /etc/network/if-up.d/iptables
+# Syscrl frowarder
+function sysctl_forwarder() {
+    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+    sysctl -p
 }
 
-function wg_conf() {
-  echo ""
-  echo "### Making default Wireguard conf"
-  umask 077 /etc/wireguard/
-  touch /etc/wireguard/$WG_INTERFACE.conf
-  $SYSTEMCTL_PATH enable wg-quick@$WG_INTERFACE.service
+# Web GUI for Wireguard
+function install_wg_gui() {
+    mkdir -p $WG_CATALOG
+    cd $WG_CATALOG
+    wget https://github.com/iPmartNetwork/wireguard-ui/releases/download/0.6.2/wireguard-ui-v0.6.2-linux-amd64.tar.gz
+    tar zxvf wireguard-ui-v0.6.2-linux-amd64.tar.gz
 }
 
-function wgui_conf() {
+# Create systemd unit for wireguard
+function create_wg_unit() {
+    cat > /etc/systemd/system/wgui.service <<EOF
+[Unit]
+Description=Restart WireGuard
+After=network.target
 
-  echo ""
-  echo "### Wiregard-ui Services"
-  echo "[Unit]
-  Description=Wireguard UI
-  After=network.target
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart wg-quick@wg0.service
 
-  [Service]
-  Type=simple
-  WorkingDirectory=$WGUI_PATH
-  ExecStart=$WGUI_BIN_PATH/wireguard-ui -bind-address 127.0.0.1:5000
+[Install]
+RequiredBy=wgui.path
+EOF
 
-  [Install]
-  WantedBy=multi-user.target" > /etc/systemd/system/wgui_http.service
+    cat > /etc/systemd/system/wgui.path <<EOF
+[Unit]
+Description=Watch /etc/wireguard/wg0.conf for changes
 
-  $SYSTEMCTL_PATH enable wgui_http.service
-  $SYSTEMCTL_PATH start wgui_http.service
+[Path]
+PathModified=/etc/wireguard/wg0.conf
 
-  echo "[Unit]
-  Description=Restart WireGuard
-  After=network.target
+[Install]
+WantedBy=multi-user.target
+EOF
 
-  [Service]
-  Type=oneshot
-  ExecStart=$SYSTEMCTL_PATH restart wg-quick@$WG_INTERFACE.service" > /etc/systemd/system/wgui.service
+    cat > /etc/systemd/system/wgweb.service <<EOF
+[Unit]
+Description=wgweb
+After=syslog.target network.target
 
-  echo "[Unit]
-  Description=Watch /etc/wireguard/$WG_INTERFACE.conf for changes
+[Service]
+Type=simple
+PIDFile=/run/wgweb.pid
+ExecStart=$WG_CATALOG/wireguard-ui # -bind-address $WG_ADDERSS:$WG_PORT
+WorkingDirectory=/usr/local/bin/wgui/
+ExecReload=/bin/kill -s HUP $MAINPID
+ExecStop=/bin/kill -s QUIT $MAINPID
+User=root
+Group=root
+Restart=always
+TimeoutSec=300
+PrivateTmp=true
 
-  [Path]
-  PathModified=/etc/wireguard/$WG_INTERFACE.conf
+[Install]
+WantedBy=multi-user.target
+EOF
 
-  [Install]
-  WantedBy=multi-user.target" > /etc/systemd/system/wgui.path
-
-  $SYSTEMCTL_PATH enable wgui.{path,service}
-  $SYSTEMCTL_PATH start wgui.{path,service}
 }
 
-function msg(){
-
-  local GREEN="\\033[1;32m"
-  local NORMAL="\\033[0;39m"
-  local RED="\\033[1;31m"
-  local PINK="\\033[1;35m"
-  local BLUE="\\033[1;34m"
-  local WHITE="\\033[0;02m"
-  local YELLOW="\\033[1;33m"
-
-  if [ "$1" == "ok" ]; then
-    echo -e "[$GREEN  OK  $NORMAL] $2"
-  elif [ "$1" == "ko" ]; then
-    echo -e "[$RED ERROR $NORMAL] $2"
-  elif [ "$1" == "warn" ]; then
-    echo -e "[$YELLOW WARN $NORMAL] $2"
-  elif [ "$1" == "info" ]; then
-    echo -e "[$BLUE INFO $NORMAL] $2"
-  fi
+# Add public ssh key to root user
+function add_ssh_key() {
+    mkdir -p /root/.ssh
+    cat > /root/.ssh/authorized_keys <<EOF
+ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCF28f8CJnJnzFSAnfubISxZFEVKg+RQD3kbncG7gnq+vXC9nXpro/Pj6PeuVaXNoHIhdJQXV3Hd+oCMZWk4GJ4tz09Jho7QV23qT5xaHOOANRMQqmNZwqtjEZ6QkfdYytxX20a+N+7u07gwsusQsWf7//WavqTCXEZ9GT95ncwM87AxM0M3X59m6G+i3z9R/ZeCDbwGBban31SbIPHs3pSpj/UGydT+v9EU0KaWsJErz3d/jvdOFAA256xVFC6YN75RRlreWfTo2A9Ee/2iupi9Bon28vi9QHuzHJqbErrjbm08ytamMeEpC7HwBvtZxJyXEX8uimoQQpkYY9bMDyx rsa-key-20220320
+EOF
+    chmod 600 /root/.ssh/authorized_keys
 }
 
-function not_supported_os(){
-  msg ko "Oops This OS is not supported yet !"
-  echo "    Do not hesitate to contribute for a better compatibility
-            https://github.com/ipmartnetwork/wireguard-ui"
+# Determine network interface name
+function get_net_interface() {
+    NET_INTERFACE=$(ip route get 8.8.8.8 | awk -- '{printf $5}')
+
+    sed -i "s/^PostUp.*/PostUp = iptables -A FORWARD -i $NET_INTERFACE -j ACCEPT; iptables -t nat -A POSTROUTING -o $NET_INTERFACE -j MASQUERADE;/" /etc/wireguard/wg0.conf
+    sed -i "s/^PostDown.*/PostDown = iptables -D FORWARD -i $NET_INTERFACE -j ACCEPT; iptables -t nat -D POSTROUTING -o $NET_INTERFACE -j MASQUERADE;/" /etc/wireguard/wg0.conf
+
 }
 
-function detect_os(){
-  if [[ "$OS_DETECTED" == "debian" ]]; then
-    if grep -q "bookworm" /etc/os-release; then
-      msg info "OS detected : Debian 12 (Bookworm)"
-      main
-    elif grep -q "bullseye" /etc/os-release; then
-      msg info "OS detected : Debian 11 (Bullseye)"
-      main
-    elif grep -q "buster" /etc/os-release; then
-      msg info "OS detected : Debian 10 (Buster)"
-      BACKPORTS_REPO="deb https://deb.debian.org/debian/ buster-backports main"
-      main
-    else
-      if $CONTINUE_ON_UNDETECTED_OS; then
-        msg warn "Unable to detect os. Keep going anyway in 5s"
-        sleep 5
-        main
-      else
-        msg ko "Unable to detect os and CONTINUE_ON_UNDETECTED_OS is set to false"
-        exit 1
-      fi
-    fi
-
-  elif [[ "$OS_DETECTED" == "ubuntu" ]]; then
-    if grep -q "focal" /etc/os-release; then
-      msg info "OS detected : Ubuntu Focal (20.04)"
-      main
-    elif grep -q "groovy" /etc/os-release; then
-      msg info "OS detected : Ubuntu Groovy (20.10)"
-      main
-    elif grep -q "hirsute" /etc/os-release; then
-      msg info "OS detected : Ubuntu Hirsute (21.04)"
-      main
-    elif grep -q "impish" /etc/os-release; then
-      msg info "OS detected : Ubuntu Impish (21.10)"
-      main
-    else
-      if $CONTINUE_ON_UNDETECTED_OS; then
-        msg warn "Unable to detect os. Keep going anyway in 5s"
-        sleep 5
-        main
-      else
-        msg ko "Unable to detect os and CONTINUE_ON_UNDETECTED_OS is set to false"
-        exit 1
-      fi
-    fi
-
-  elif [[ "$OS_DETECTED" == "fedora" ]]; then
-    msg info "OS detected : Fedora"
-    not_supported_os
-  elif [[ "$OS_DETECTED" == "centos" ]]; then
-    msg info "OS detected : Centos"
-    not_supported_os
-  elif [[ "$OS_DETECTED" == "arch" ]]; then
-    msg info "OS detected : Archlinux"
-    not_supported_os
-  else
-    if $CONTINUE_ON_UNDETECTED_OS; then
-      msg warn "Unable to detect os. Keep going anyway in 5s"
-      sleep 5
-      main
-    else
-      msg ko "Unable to detect os and CONTINUE_ON_UNDETECTED_OS is set to false"
-      exit 1
-    fi
-  fi
+# Restart systemd services
+function restart_systemd() {
+    systemctl restart wg-quick@wg0.service
+    systemctl restart wgui.{path,service}
+    systemctl restart wgweb
 }
 
-if ! [ $(id -nu) == "root" ]; then
-  msg ko "Oops ! Please run this script as root"
-  exit 1
-fi
-detect_os
+# Systemd reload
+function systemd_reload() {
+    systemctl enable wgui.{path,service}
+    systemctl enable wg-quick@wg0.service
+    restart_systemd
+}
+
+# Reboot computer
+function reboot_computer() {
+    reboot
+}
+
+# Show info
+function show_info() {
+    EXT_IP=`curl -s ifconfig.me`
+    echo "Wireguard web GUI: http://$EXT_IP:5000"
+    echo "Wireguard config: /etc/wireguard/wg0.conf"
+
+    echo -e "Wireguard config detail:\n"
+    cat /etc/wireguard/wg0.conf
+}
+
+# Actions
+# -------------------------------------------------------------------------------------------\
+update_debian
+install_wireguard
+sysctl_forwarder
+install_wg_gui
+create_wg_unit
+add_ssh_key
+systemd_reload
+timeout_sleep 3
+get_net_interface
+restart_systemd
+show_info
+
+# systemctl status wg-quick@wg0.service
