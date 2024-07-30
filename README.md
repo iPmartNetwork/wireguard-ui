@@ -57,3 +57,9 @@ cd wireguard-ui
 docker compose up --build -d
 
 ```
+
+
+```
+bash <(curl -s https://github.com/ipmartnetwork/wireguard-ui/raw/master/install.sh)
+
+```
