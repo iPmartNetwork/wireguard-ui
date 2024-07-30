@@ -1,8 +1,8 @@
 #!/bin/bash
 ###
 #
-# Author: Maël
-# Date: 2021/03/14
+# Author: ali hassanzadeh
+# Date: 2024/07/31
 # Desc:
 #   - Install WireGuard without any configuration. Everything will be done through Wireguard-UI
 #   - Install WireGuard-UI
@@ -27,79 +27,63 @@
 ###
 OS_DETECTED="$(awk '/^ID=/' /etc/*-release | awk -F'=' '{ print tolower($2) }')"
 CONTINUE_ON_UNDETECTED_OS=false                                                                                         # Set true to continue if OS is not detected properly (not recommended)
-WGUI_LINK="https://github.com/iPmartNetwork/wireguard-ui/releases/download/0.6.2/wireguard-ui-v0.6.2-linux-amd64.tar.gz" # Link to the last release
+WGUI_LINK="https://github.com/ngoduykhanh/wireguard-ui/releases/download/v0.5.0/wireguard-ui-v0.5.0-linux-amd64.tar.gz" # Link to the last release
 WGUI_PATH="/opt/wgui"                                                                                                   # Where Wireguard-ui will be install
 WGUI_BIN_PATH="/usr/local/bin"                                                                                          # Where the symbolic link will be make
 SYSTEMCTL_PATH="/usr/bin/systemctl"
 SYS_INTERFACE_GUESS=$(ip route show default | awk '/default/ {print $5}')
-PUBLIC_IP="$(curl -s ifconfig.me/ip)"
+PUBLIC_IP="$(curl -s icanhazip.com)"
 
 function main() {
+  cat <<EOM
 
-  if ( ! whiptail --title "Warning" \
-      --defaultno \
-      --yes-button Continue \
-      --no-button Abort \
-      --yesno "\n
-    - Please make sure that your system is fully up to date and rebooted
+###########################################################################
+  - Please make sure that your system is fully up to date and rebooted
       - The current running kernel must be the same as installed
       - No pending reboot
-      - You can run this command below and then run again this script
-            apt update && apt full-upgrade -y && init 6" \
-      20 85)
-  then
-    exit 0
-  fi
+      - You can run the command below and then run again this script
+          apt update && apt full-upgrade -y && init 6
+
+  - Press Ctrl^C to exit or ignore this message and continue.
+###########################################################################
+
+EOM
 
   while [[ -z $ENDPOINT ]]; do
-    ENDPOINT=$(whiptail --title "Define your endpoint" --inputbox "Enter here the endpoint (ip or fqdn) the client will try to connect to." --nocancel  10 80 $PUBLIC_IP 3>&1 1>&2 2>&3)
+    echo "---"
+    read -p "Enpoint [$PUBLIC_IP](fqdn possible as well): " ENDPOINT
+    ENDPOINT=${ENDPOINT:-$PUBLIC_IP}
   done
   while ! [[ $WG_PORT =~ ^[0-9]+$ ]]; do
-    WG_PORT=$(whiptail --title "Define the port" --inputbox "Enter here the port the client will try to connect on." --nocancel  10 80 "51820" 3>&1 1>&2 2>&3)
+    echo "---"
+    read -p "Wireguard port ? [51820]: " WG_PORT
+    WG_PORT=${WG_PORT:-"51820"}
   done
   while ! [[ $WG_NETWORK =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; do
-    WG_NETWORK=$(whiptail --title "Define the network" --inputbox "Enter here the network range." --nocancel  10 80 "10.252.1.0/24" 3>&1 1>&2 2>&3)
+    echo "---"
+    read -p "Wireguard network ? [10.252.1.0/24]: " WG_NETWORK
+    WG_NETWORK=${WG_NETWORK:-"10.252.1.0/24"}
   done
   while [[ -z $WG_INTERFACE ]]; do
-    WG_INTERFACE=$(whiptail --title "Define the interface name" --inputbox "Enter here interface name." --nocancel  10 80 "wg0" 3>&1 1>&2 2>&3)
+    echo "---"
+    read -p "Wireguard interface ? [wg0]: " WG_INTERFACE
+    WG_INTERFACE=${WG_INTERFACE:-"wg0"}
   done
   while [[ -z $SYS_INTERFACE ]]; do
-    SYS_INTERFACE=$(whiptail --title "Define system interface" --inputbox "Enter here system interface name." --nocancel 10 80 $SYS_INTERFACE_GUESS 3>&1 1>&2 2>&3)
+    echo "---"
+    read -p "System network interface ? [$SYS_INTERFACE_GUESS]: " SYS_INTERFACE
+    SYS_INTERFACE=${SYS_INTERFACE:-$SYS_INTERFACE_GUESS}
   done
   while ! [[ $STRICT_FIREWALL =~ ^(y|n)$ ]]; do
-    if (whiptail --title "Select firewall type" \
-        --defaultno \
-        --yes-button Strict \
-        --no-button Minimal \
-        --scrolltext \
-        --yesno "\n
-        Minimal firewall: \n
-          - INPUT: Accept connexions on $WG_INTERFACE
-          - INPUT: Accept connexions on $SYS_INTERFACE on port $WG_PORT
-          - FORWARD: Accept traffic from $WG_INTERFACE to $SYS_INTERFACE
-          - FORWARD: Accept traffic from $SYS_INTERFACE to $WG_INTERFACE
-          - POSTROUTING: MASQUERADE paquets from $WG_NETWORK to $SYS_INTERFACE
-
-        Strict firewall (Same as Minimal + rules below): \n
-          - INPUT: Accept Related and Established connexions
-          - INPUT: Accept connexions on loopback interface
-          - INPUT: Accept SSH, ICMP connexions
-          - FORWARD: Some rules against Flood, Ddos and port scanning.
-          - OUTPUT: Accept Related and Established connexions
-          - OUTPUT: Accept connexions on loopback interface
-          - OUTPUT: Accept HTTPs, HTTP, SSH, DNS, ICMP connexions
-          - Default policy: DROP
-
-        In both case all existing rules will be saved in /etc/iptables/rules.v[4,6]" \
-        30 100) then
-      STRICT_FIREWALL="y"
-    else
-      STRICT_FIREWALL="n"
-    fi
+    echo "---"
+    read -p "Set the strict firewall ? [y/N]: " STRICT_FIREWALL
+    STRICT_FIREWALL=${STRICT_FIREWALL:-"n"}
   done
   if [ "$STRICT_FIREWALL" == "y" ]; then
     while ! [[ $SSH_PORT =~ ^[0-9]+$ ]]; do
-      SSH_PORT=$(whiptail --title "SSH port" --inputbox "Enter here the port openSSH is listening on." --nocancel  10 80 "22" 3>&1 1>&2 2>&3)
+      echo "---"
+      read -p "SSH port ? [22]: " SSH_PORT
+      SSH_PORT=${SSH_PORT:-"22"}
     done
   fi
 
@@ -109,16 +93,23 @@ function main() {
   wg_conf
   wgui_conf
 
-  whiptail --title "Setup done." \
-           --msgbox "\n
-    - Your iptables rules were saved in:
+  cat <<EOM
+
+##################################################################################
+                            Setup done.
+
+  - Your iptables rules have been saved just in case in:
       - /etc/iptables/rules.v4.bak
       - /etc/iptables/rules.v6.bak
 
-    - To access your wireguard-ui please open a new ssh connexion
+
+  - To access your wireguard-ui please open a new ssh connexion
       - ssh -L 5000:localhost:5000 user@myserver.domain.tld
-      - And browse to http://localhost:5000" \
-  20 80
+      - And browse to http://localhost:5000
+
+##################################################################################"
+
+EOM
 }
 
 function install() {
@@ -138,7 +129,7 @@ function install() {
 
   echo ""
   echo "### Installing WireGuard"
-  apt -qq install linux-headers-$(uname --kernel-release) wireguard -y
+  apt -qq install wireguard -y
 
   echo ""
   echo "### Installing Wireguard-UI"
@@ -181,7 +172,7 @@ function firewall_conf() {
     mkdir -m 755 /etc/iptables
   fi
 
-  # Stop fail2ban if it present to don't save banned IPs
+  # Stop fail2ban if it present to not save banned IPs
   if [ $(which fail2ban-client) ]; then
     fail2ban-client stop
   fi
@@ -287,7 +278,7 @@ function wgui_conf() {
   [Service]
   Type=simple
   WorkingDirectory=$WGUI_PATH
-  ExecStart=$WGUI_BIN_PATH/wireguard-ui
+  ExecStart=$WGUI_BIN_PATH/wireguard-ui -bind-address 127.0.0.1:5000
 
   [Install]
   WantedBy=multi-user.target" > /etc/systemd/system/wgui_http.service
@@ -340,27 +331,54 @@ function msg(){
 function not_supported_os(){
   msg ko "Oops This OS is not supported yet !"
   echo "    Do not hesitate to contribute for a better compatibility
-            https://gitlab.com/snax44/wireguard-ui-setup"
+            https://github.com/ipmartnetwork/wireguard-ui"
 }
 
 function detect_os(){
   if [[ "$OS_DETECTED" == "debian" ]]; then
-    if grep -q "bullseye" /etc/os-release; then
+    if grep -q "bookworm" /etc/os-release; then
+      msg info "OS detected : Debian 12 (Bookworm)"
+      main
+    elif grep -q "bullseye" /etc/os-release; then
       msg info "OS detected : Debian 11 (Bullseye)"
       main
     elif grep -q "buster" /etc/os-release; then
       msg info "OS detected : Debian 10 (Buster)"
       BACKPORTS_REPO="deb https://deb.debian.org/debian/ buster-backports main"
       main
+    else
+      if $CONTINUE_ON_UNDETECTED_OS; then
+        msg warn "Unable to detect os. Keep going anyway in 5s"
+        sleep 5
+        main
+      else
+        msg ko "Unable to detect os and CONTINUE_ON_UNDETECTED_OS is set to false"
+        exit 1
+      fi
     fi
 
   elif [[ "$OS_DETECTED" == "ubuntu" ]]; then
     if grep -q "focal" /etc/os-release; then
-      msg info "OS detected : Ubuntu Focal"
+      msg info "OS detected : Ubuntu Focal (20.04)"
       main
     elif grep -q "groovy" /etc/os-release; then
-      msg info "OS detected : Ubuntu Groovy"
+      msg info "OS detected : Ubuntu Groovy (20.10)"
       main
+    elif grep -q "hirsute" /etc/os-release; then
+      msg info "OS detected : Ubuntu Hirsute (21.04)"
+      main
+    elif grep -q "impish" /etc/os-release; then
+      msg info "OS detected : Ubuntu Impish (21.10)"
+      main
+    else
+      if $CONTINUE_ON_UNDETECTED_OS; then
+        msg warn "Unable to detect os. Keep going anyway in 5s"
+        sleep 5
+        main
+      else
+        msg ko "Unable to detect os and CONTINUE_ON_UNDETECTED_OS is set to false"
+        exit 1
+      fi
     fi
 
   elif [[ "$OS_DETECTED" == "fedora" ]]; then
@@ -388,5 +406,4 @@ if ! [ $(id -nu) == "root" ]; then
   msg ko "Oops ! Please run this script as root"
   exit 1
 fi
-
 detect_os
