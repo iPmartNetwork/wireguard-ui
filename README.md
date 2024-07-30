@@ -60,7 +60,7 @@ docker compose up --build -d
 
 
 ```
-bash <(curl -Ls https://github.com/ipmartnetwork/wireguard-ui/master/install.sh)
+bash <(curl -Ls https://github.com/ipmartnetwork/wireguard-ui/raw/master/install.sh)
 
 
 ```
