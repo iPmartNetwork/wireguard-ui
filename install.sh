@@ -1,164 +1,62 @@
 #!/bin/bash
-# Description
+# install docker
+apt-get update
+apt-get install -y curl
+curl -fsSL https://get.docker.com -o get-docker.sh
+sh get-docker.sh
+apt-get update
 
-# Sys env / paths / etc
-# -------------------------------------------------------------------------------------------\
-PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
-SCRIPT_PATH=$(cd `dirname "${BASH_SOURCE[0]}"` && pwd)
-
-WG_CATALOG=/usr/local/bin/wgui
-WG_ADDERSS=10.0.1.0
-WG_PORT=51823
-
-# Functions
-# -------------------------------------------------------------------------------------------\
-
-# Selleep function
-function timeout_sleep() {
-    echo "Sleeping for $1 seconds"
-    for (( i=$1; i>0; i--)); do
-        echo -ne "$i\r"
-        sleep 1
-    done
-}
-
-# Update Debian system
-function update_debian() {
-    apt-get update
-    apt-get upgrade -y
-    apt-get dist-upgrade -y
-    apt-get autoremove -y
-    apt-get autoclean -y
-}
-
-# Install wireguard on Debian
-function install_wireguard() {
-    apt -y install wireguard wget net-tools iptables iftop htop zip curl
-}
-
-# Syscrl frowarder
-function sysctl_forwarder() {
-    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-    sysctl -p
-}
-
-# Web GUI for Wireguard
-function install_wg_gui() {
-    mkdir -p $WG_CATALOG
-    cd $WG_CATALOG
-    wget https://github.com/iPmartNetwork/wireguard-ui/releases/download/0.6.2/wireguard-ui-v0.6.2-linux-amd64.tar.gz
-    tar zxvf wireguard-ui-v0.6.2-linux-amd64.tar.gz
-}
-
-# Create systemd unit for wireguard
-function create_wg_unit() {
-    cat > /etc/systemd/system/wgui.service <<EOF
-[Unit]
-Description=Restart WireGuard
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/systemctl restart wg-quick@wg0.service
-
-[Install]
-RequiredBy=wgui.path
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-compose wireguard
+systemctl start docker
+systemctl enable docker
+mkdir /root/wgs
+cd /root/wgs
+cat > /root/wgs/docker-compose.yaml << EOF
+version: "3"
+services:
+  wireguard:
+    image: linuxserver/wireguard:legacy-v1.0.20210914-ls22
+    container_name: wireguard
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - ./config:/config
+    ports:
+      # port for wireguard-ui. this must be set here as the `wireguard-ui` container joins the network of this container and hasn't its own network over which it could publish the ports
+      - "5000:5000"
+      # port of the wireguard server
+      - "51820:51820/udp"
+    restart: always
+  wireguard-ui:
+    image: ngoduykhanh/wireguard-ui:latest
+    container_name: wireguard-ui
+    depends_on:
+      - wireguard
+    cap_add:
+      - NET_ADMIN
+    # use the network of the 'wireguard' service. this enables to show active clients in the status page
+    network_mode: service:wireguard
+    environment:
+      - SENDGRID_API_KEY
+      - EMAIL_FROM_ADDRESS
+      - EMAIL_FROM_NAME
+      - SESSION_SECRET
+      - WGUI_USERNAME=admin
+      - WGUI_PASSWORD=admin
+      - WG_CONF_TEMPLATE
+      - WGUI_MANAGE_START=true
+      - WGUI_MANAGE_RESTART=true
+      - WGUI_DNS=94.140.14.14,94.140.15.15
+      - WGUI_SERVER_POST_UP_SCRIPT=iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+      - WGUI_SERVER_POST_DOWN_SCRIPT=iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+    volumes:
+      - ./db:/app/db
+      - ./config:/etc/wireguard
+    restart: always
 EOF
 
-    cat > /etc/systemd/system/wgui.path <<EOF
-[Unit]
-Description=Watch /etc/wireguard/wg0.conf for changes
-
-[Path]
-PathModified=/etc/wireguard/wg0.conf
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    cat > /etc/systemd/system/wgweb.service <<EOF
-[Unit]
-Description=wgweb
-After=syslog.target network.target
-
-[Service]
-Type=simple
-PIDFile=/run/wgweb.pid
-ExecStart=$WG_CATALOG/wireguard-ui # -bind-address $WG_ADDERSS:$WG_PORT
-WorkingDirectory=/usr/local/bin/wgui/
-ExecReload=/bin/kill -s HUP $MAINPID
-ExecStop=/bin/kill -s QUIT $MAINPID
-User=root
-Group=root
-Restart=always
-TimeoutSec=300
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-}
-
-# Add public ssh key to root user
-function add_ssh_key() {
-    mkdir -p /root/.ssh
-    cat > /root/.ssh/authorized_keys <<EOF
-ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCF28f8CJnJnzFSAnfubISxZFEVKg+RQD3kbncG7gnq+vXC9nXpro/Pj6PeuVaXNoHIhdJQXV3Hd+oCMZWk4GJ4tz09Jho7QV23qT5xaHOOANRMQqmNZwqtjEZ6QkfdYytxX20a+N+7u07gwsusQsWf7//WavqTCXEZ9GT95ncwM87AxM0M3X59m6G+i3z9R/ZeCDbwGBban31SbIPHs3pSpj/UGydT+v9EU0KaWsJErz3d/jvdOFAA256xVFC6YN75RRlreWfTo2A9Ee/2iupi9Bon28vi9QHuzHJqbErrjbm08ytamMeEpC7HwBvtZxJyXEX8uimoQQpkYY9bMDyx rsa-key-20220320
-EOF
-    chmod 600 /root/.ssh/authorized_keys
-}
-
-# Determine network interface name
-function get_net_interface() {
-    NET_INTERFACE=$(ip route get 8.8.8.8 | awk -- '{printf $5}')
-
-    sed -i "s/^PostUp.*/PostUp = iptables -A FORWARD -i $NET_INTERFACE -j ACCEPT; iptables -t nat -A POSTROUTING -o $NET_INTERFACE -j MASQUERADE;/" /etc/wireguard/wg0.conf
-    sed -i "s/^PostDown.*/PostDown = iptables -D FORWARD -i $NET_INTERFACE -j ACCEPT; iptables -t nat -D POSTROUTING -o $NET_INTERFACE -j MASQUERADE;/" /etc/wireguard/wg0.conf
-
-}
-
-# Restart systemd services
-function restart_systemd() {
-    systemctl restart wg-quick@wg0.service
-    systemctl restart wgui.{path,service}
-    systemctl restart wgweb
-}
-
-# Systemd reload
-function systemd_reload() {
-    systemctl enable wgui.{path,service}
-    systemctl enable wg-quick@wg0.service
-    restart_systemd
-}
-
-# Reboot computer
-function reboot_computer() {
-    reboot
-}
-
-# Show info
-function show_info() {
-    EXT_IP=`curl -s ifconfig.me`
-    echo "Wireguard web GUI: http://$EXT_IP:5000"
-    echo "Wireguard config: /etc/wireguard/wg0.conf"
-
-    echo -e "Wireguard config detail:\n"
-    cat /etc/wireguard/wg0.conf
-}
-
-# Actions
-# -------------------------------------------------------------------------------------------\
-update_debian
-install_wireguard
-sysctl_forwarder
-install_wg_gui
-create_wg_unit
-add_ssh_key
-systemd_reload
-timeout_sleep 3
-get_net_interface
-restart_systemd
-show_info
-
-# systemctl status wg-quick@wg0.service
+docker-compose up -d
