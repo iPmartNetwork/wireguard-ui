@@ -23,6 +23,14 @@ Ubuntu 22, debian +10
 
   Feel free to contribute and make this project better!
 
+## Easy Install
+
+```
+bash <(curl -Ls https://github.com/ipmartnetwork/wireguard-ui/raw/master/install.sh)
+
+```
+
+
 ## Installation - Docker
 
 Before proceeding with the installation of Outline Admin, ensure that `docker` and `docker-compose` are installed on your machine. Follow the instructions below:
@@ -58,9 +66,3 @@ docker compose up --build -d
 
 ```
 
-
-```
-bash <(curl -Ls https://github.com/ipmartnetwork/wireguard-ui/raw/master/install.sh)
-
-
-```
